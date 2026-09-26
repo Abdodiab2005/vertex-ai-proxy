@@ -1,0 +1,212 @@
+# Production stack. Run from the repository root:
+#   docker compose -f deploy/docker-compose.prod.yml up -d --build
+#
+# The project name is fixed so these volumes do not collide with the dev
+# compose file, which lives in the same directory and would otherwise share
+# the project name derived from that directory.
+#
+# Only nginx publishes ports. Postgres and Redis stay on the gateway network.
+# TRUST_PROXY on the API is this network's CIDR: nginx and the admin panel are
+# both on it, and Express must trust their X-Forwarded-For without trusting
+# the whole internet. Change the subnet and TRUST_PROXY together.
+
+name: gemini-gateway
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in deploy/.env}
+      POSTGRES_DB: ${DB_NAME:-gemini_gateway}
+    volumes:
+      # Postgres 18 images keep data in a major-versioned directory under this
+      # path (so pg_upgrade --link works) and refuse to start with a volume at
+      # the old /var/lib/postgresql/data location.
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      # Substituted by Compose from deploy/.env. A $$ left for the container
+      # shell is the process id, not the Postgres user.
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${DB_USERNAME:-postgres} -d ${DB_NAME:-gemini_gateway}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - gateway
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    # appendonly keeps rate, concurrency, and reservation keys across a restart.
+    # Losing them is safe; see docs/DEPLOYMENT.md. No password: the port is not
+    # published, and the API is the only client on this network.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - gateway
+
+  migrate:
+    image: gemini-gateway-api:local
+    build:
+      context: ..
+      dockerfile: docker/api.Dockerfile
+    restart: "no"
+    # The image HEALTHCHECK probes the HTTP server. This process is the CLI.
+    healthcheck:
+      disable: true
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      DB_HOST: postgres
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in deploy/.env}
+      DB_NAME: ${DB_NAME:-gemini_gateway}
+      DB_SSL: ${DB_SSL:-false}
+    command:
+      - node
+      - /app/node_modules/typeorm/cli.js
+      - migration:run
+      - -d
+      - /app/node_modules/@gateway/database/dist/data-source.js
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - gateway
+    init: true
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    image: gemini-gateway-api:local
+    build:
+      context: ..
+      dockerfile: docker/api.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DB_HOST: postgres
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in deploy/.env}
+      DB_NAME: ${DB_NAME:-gemini_gateway}
+      DB_SSL: ${DB_SSL:-false}
+      REDIS_URL: redis://redis:6379
+      # Overrides deploy/.env so a copied dev value of "loopback" is not what
+      # production runs. Must match the gateway network subnet below.
+      TRUST_PROXY: 172.28.0.0/16
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    networks:
+      - gateway
+    init: true
+    # SHUTDOWN_GRACE_MS (15 s) for requests in flight + 5 s to settle cancelled ones + margin.
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+  admin:
+    image: gemini-gateway-admin:local
+    build:
+      context: ..
+      dockerfile: docker/admin.Dockerfile
+    restart: unless-stopped
+    # No env_file: the panel does not read the database password or the
+    # credential key. GATEWAY_API_URL is the only value it needs.
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      # Server-side only. The browser never talks to the API directly.
+      GATEWAY_API_URL: http://api:3000
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/login').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - gateway
+    init: true
+    security_opt:
+      - no-new-privileges:true
+
+  nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    environment:
+      NGINX_SITE: ${NGINX_SITE:-two-domain.conf}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx:/etc/nginx/gateway:ro
+      - ./certs:/etc/nginx/certs:ro
+    # The selector script reads NGINX_SITE itself. Keeping the shell out of
+    # this YAML avoids Compose eating the variable reference.
+    command: ["/bin/sh", "/etc/nginx/gateway/select-site.sh"]
+    depends_on:
+      api:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - gateway
+
+networks:
+  gateway:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  postgres_data:
+  redis_data:

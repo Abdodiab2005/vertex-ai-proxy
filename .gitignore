@@ -1,0 +1,43 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# secrets (never commit real credentials)
+*.pem
+*.key
+service-account*.json
+credentials*.json
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# test coverage
+coverage/
+
+# editors / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# misc
+.vercel
+
+# Local assistant configuration (not part of the project)
+/CLAUDE.md
+/.claude/

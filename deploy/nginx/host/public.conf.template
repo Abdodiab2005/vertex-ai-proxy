@@ -1,0 +1,53 @@
+# __PUBLIC_DOMAIN__ — the Gemini-compatible API, proxied by the host's nginx to the API container
+# (deploy/docker-compose.host-proxy.yml). Only /v1beta and /health are public: the admin API (/admin)
+# and /metrics are not, and anything else answers 404.
+#
+# certbot --nginx adds the 443 listener and the certificate to this block in place.
+
+# Gateway keys may be sent as ?key=, so this site's access log records the path without the query.
+log_format gateway_noargs '$remote_addr - [$time_local] "$request_method $uri $server_protocol" '
+                          '$status $body_bytes_sent $request_time "$upstream_http_x_request_id"';
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __PUBLIC_DOMAIN__;
+    server_tokens off;
+
+    access_log /var/log/nginx/access.log gateway_noargs;
+
+    # With Cloudflare proxying the domain, the connection comes from a Cloudflare address; this
+    # restores the client's, which per-IP limits and allowlists depend on. Harmless without it.
+    include snippets/cloudflare-real-ip.conf;
+
+    # Above the API's 20 MiB public limit, so the API answers 413 in the Gemini error format.
+    client_max_body_size 21m;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+    }
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+
+    location /v1beta/ {
+        proxy_pass http://127.0.0.1:__API_PORT__;
+        include snippets/ai-proxy-api-proxy.conf;
+    }
+
+    location = /health {
+        proxy_pass http://127.0.0.1:__API_PORT__;
+        include snippets/ai-proxy-api-proxy.conf;
+    }
+
+    location /health/ {
+        proxy_pass http://127.0.0.1:__API_PORT__;
+        include snippets/ai-proxy-api-proxy.conf;
+    }
+
+    location / {
+        return 404;
+    }
+}

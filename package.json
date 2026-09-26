@@ -1,0 +1,42 @@
+{
+  "name": "vertex-ai-proxy",
+  "version": "0.1.0",
+  "description": "A self-hosted, Gemini-API-compatible gateway for Google Vertex AI with prepaid API keys, rate limits and per-request billing",
+  "license": "MIT",
+  "author": "Abdelrhman Diab",
+  "homepage": "https://github.com/Abdodiab2005/vertex-ai-proxy#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Abdodiab2005/vertex-ai-proxy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Abdodiab2005/vertex-ai-proxy/issues"
+  },
+  "private": true,
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "lint": "pnpm -r --if-present run lint",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "test:e2e": "sh scripts/test-e2e.sh",
+    "compat:smoke": "node scripts/compat-smoke.mjs",
+    "build": "pnpm -r --if-present run build",
+    "build:packages": "pnpm --filter \"./packages/*\" run build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "dev:api": "pnpm run build:packages && dotenv -e .env -- pnpm --filter @gateway/api run start:dev",
+    "dev:admin": "pnpm run build:packages && dotenv -e .env -- pnpm --filter @gateway/admin run dev",
+    "migration:run": "dotenv -e .env -- pnpm --filter @gateway/database run migration:run",
+    "migration:revert": "dotenv -e .env -- pnpm --filter @gateway/database run migration:revert",
+    "admin:create-owner": "pnpm run build:packages && pnpm --filter @gateway/api run build && dotenv -e .env -- node apps/api/dist/cli/create-owner.js"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^11.0.0",
+    "ioredis": "^6.0.0",
+    "prettier": "^3.9.9",
+    "typescript": "~6.0.3"
+  }
+}
