@@ -248,7 +248,8 @@ export class ApiKeysAdminService {
       subQuery => subQuery
         .select("tx.api_key_id", "apiKeyId")
         .addSelect("COALESCE(SUM(tx.amount), 0)::text", "remaining")
-        .addSelect("COALESCE(SUM(tx.amount) FILTER (WHERE tx.type = 'cost_consumed'), 0)::text", "consumed")
+        // cost_consumed amounts are signed debits (negative); report the positive spend.
+        .addSelect("(-COALESCE(SUM(tx.amount) FILTER (WHERE tx.type = 'cost_consumed'), 0))::text", "consumed")
         .from(CreditTransaction, "tx")
         .groupBy("tx.api_key_id"),
       "credits",
@@ -315,7 +316,8 @@ export class ApiKeysAdminService {
         subQuery => subQuery
           .select("tx.api_key_id", "apiKeyId")
           .addSelect("COALESCE(SUM(tx.amount), 0)::text", "remaining")
-          .addSelect("COALESCE(SUM(tx.amount) FILTER (WHERE tx.type = 'cost_consumed'), 0)::text", "consumed")
+          // cost_consumed amounts are signed debits (negative); report the positive spend.
+          .addSelect("(-COALESCE(SUM(tx.amount) FILTER (WHERE tx.type = 'cost_consumed'), 0))::text", "consumed")
           .from(CreditTransaction, "tx")
           .groupBy("tx.api_key_id"),
         "credits",
